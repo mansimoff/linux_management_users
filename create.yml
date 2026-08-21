@@ -1,0 +1,99 @@
+#Author: Ruslan Mansimov
+---
+- name: "Заведение учётных записей на серверах линукс"
+  hosts: all
+  become: yes
+  vars_files:
+    - files/users.yml
+
+  tasks:
+    - name: "Проверка наличия пакетов Postfix и s-nail"
+      ansible.builtin.package:
+        name:
+          - postfix
+          - s-nail
+        state: present
+      become: yes
+
+    - name: "Проверка и запуск службы Postfix"
+      ansible.builtin.service:
+        name: postfix
+        state: started
+        enabled: yes
+
+    - name: "Проверка пользователей в системе"
+      ansible.builtin.command:
+        cmd: "id {{ item.login }}"
+      loop: "{{ users }}"
+      register: user_check
+      failed_when: false
+      changed_when: false
+
+    - name: "Создание двух списков: существующих и новых пользоватлей"
+      ansible.builtin.set_fact:
+        existing_users: "{{ user_check.results | selectattr('rc', 'equalto', 0) | map(attribute='item.login') | list }}"
+        new_users:      "{{ user_check.results | selectattr('rc', 'equalto', 1) | map(attribute='item.login') | list }}"
+
+    # Словарь user_passwords: { "vasya.pupkin": "сгенерированный_пароль" }
+    - name: "Генерация паролей для новых пользователей"
+      ansible.builtin.set_fact:
+        user_passwords: "{{ user_passwords | default({}) | combine({item: lookup('password', '/dev/null length=16 chars=ascii_letters,digits,punctuation')}) }}"
+      loop: "{{ new_users }}"
+      no_log: true
+
+    - name: "Создание УЗ для новых пользователей"
+      ansible.builtin.user:
+        name:        "{{ item.login }}"
+        comment:     "{{ item.firstname }} {{ item.lastname }}"
+        groups:      "{{ item.groups | default(omit) }}"
+        append:      yes
+        shell:       /bin/bash
+        create_home: yes
+        state:       present
+        password:    "{{ user_passwords[item.login] | password_hash('sha512') }}"
+      loop: "{{ users }}"
+      when: item.login in new_users
+      no_log: true
+
+    - name: "Настройка обязательной смены пароля при первом входе"
+      ansible.builtin.command:
+        cmd: "chage -d 0 {{ item.login }}"
+      loop: "{{ users }}"
+      when: item.login in new_users
+    
+    - name: "Отправка данных для входа на почту"
+      ansible.builtin.shell:
+        cmd: "echo '{{ mail_body }}' | mail -s '{{ mail_subject }}' {{ item.email }}"
+      loop: "{{ users }}"
+      when: item.login in new_users
+      no_log: true
+      vars:
+        mail_subject: "Доступ к серверу {{ inventory_hostname }}"
+        mail_body: |
+          Для вас создана учётная запись на сервере {{inventory_hostname}}.
+          Сервер:  {{ inventory_hostname }}
+          Логин:   {{ item.login }}
+          Пароль:  {{ user_passwords[item.login] }}
+
+          Подключение:
+          ssh -p 222 {{ item.login }}@{{ ansible_host | default(inventory_hostname) }}
+
+          При первом входе система потребует сменить пароль.
+          Ответьте yes на уведомление о новом хосте ssh.
+          Набор пароля происходит на чёрном фоне, символы не отображаются.
+          По окончании набора нажмите ↵Enter.
+
+          ---
+          Это письмо сгенерировано автоматически.
+          По вопросам обращайтесь к системному администратору.     
+    
+    - name: "Итоговый отчёт" 
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.login }} —
+          {% if item.login in new_users %}
+          создан, письмо отправлено на {{ item.email }}
+          {% else %}
+          уже существует, пропущен
+          {% endif %}
+      loop: "{{ users }}"

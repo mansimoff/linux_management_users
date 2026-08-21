@@ -1,0 +1,81 @@
+#Author: Ruslan Mansimov
+---
+- name: Блокировка учётных записей на Linux-серверах (production)
+  hosts: all
+  become: true
+
+  vars_files:
+    - files/users_lock.yml
+
+  tasks:
+
+    # ─────────────────────────────────────────────
+    # 1. Проверка существования пользователей
+    # ─────────────────────────────────────────────
+    - name: Проверка пользователей в системе (getent)
+      ansible.builtin.command:
+        cmd: "getent passwd {{ item.login }}"
+      loop: "{{ users }}"
+      register: user_check
+      changed_when: false
+      failed_when: false
+
+
+    # ─────────────────────────────────────────────
+    # 2. Формирование списков
+    # ─────────────────────────────────────────────
+    - name: Формирование списков найденных и отсутствующих пользователей
+      ansible.builtin.set_fact:
+        existing_users: >-
+          {{
+            user_check.results
+            | selectattr('rc', 'equalto', 0)
+            | map(attribute='item.login')
+            | list
+          }}
+
+        missing_users: >-
+          {{
+            user_check.results
+            | selectattr('rc', 'ne', 0)
+            | map(attribute='item.login')
+            | list
+          }}
+
+
+    # ─────────────────────────────────────────────
+    # 3. Блокировка найденных пользователей
+    # ─────────────────────────────────────────────
+    - name: Блокировка существующих пользователей
+      ansible.builtin.user:
+        name: "{{ item }}"
+        password_lock: true
+        shell: /sbin/nologin
+      loop: "{{ existing_users }}"
+      register: lock_result
+
+
+    # ─────────────────────────────────────────────
+    # 4. Отчёт по успешным блокировкам
+    # ─────────────────────────────────────────────
+    - name: Отчёт по заблокированным пользователям
+      ansible.builtin.debug:
+        msg: >-
+          ✔ {{ item.item }} заблокирован на {{ inventory_hostname }}
+      loop: "{{ lock_result.results | default([]) }}"
+      when: item.changed
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ─────────────────────────────────────────────
+    # 5. Отчёт по отсутствующим пользователям
+    # ─────────────────────────────────────────────
+    - name: Отчёт по отсутствующим пользователям
+      ansible.builtin.debug:
+        msg: >-
+          Пользователь {{ item }} отсутствует на {{ inventory_hostname }}
+          — блокировка пропущена
+      loop: "{{ missing_users }}"
+      when: missing_users | length > 0
+
+

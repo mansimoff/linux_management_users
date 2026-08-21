@@ -1,0 +1,3 @@
+users:
+  - { login: "test", firstname: "Test", lastname: "Testov", email: "test.testing@yandex.ru", groups: ["users", "wheel"]}
+  - { login: "vasya.pupkin", firstname: "Vasya", lastname: "Pupkin", email: "vasya.pupkin@ya.ru", groups: ["users", "wheel"]}  

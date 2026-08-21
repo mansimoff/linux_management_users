@@ -1,0 +1,3 @@
+users:
+  - { login: "rus", firstname: "belorus", lastname: "example"}
+
