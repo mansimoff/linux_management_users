@@ -1,0 +1,3 @@
+users:
+    - { login: "test", firstname: "test", lastname: "test", email: "test@company.net"}
+

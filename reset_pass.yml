@@ -1,0 +1,123 @@
+---
+- name: "Сброс паролей пользователей Linux"
+  hosts: all
+  become: yes
+
+  vars_files:
+    - files/users_reset_pass.yml
+
+  tasks:
+
+    # ── 1. Проверяем, что Postfix запущен ────────────────────────────────
+    - name: "Проверка и запуск службы Postfix"
+      ansible.builtin.service:
+        name: postfix
+        state: started
+        enabled: yes
+
+
+    # ── 2. Проверяем существование пользователей ────────────────────────
+    - name: "Проверка существования пользователей"
+      ansible.builtin.command:
+        cmd: "id {{ item.login }}"
+      loop: "{{ users }}"
+      register: user_check
+      changed_when: false
+      failed_when: false
+
+
+    # ── 3. Формируем список несуществующих пользователей ────────────────
+    - name: "Проверка результатов"
+      ansible.builtin.fail:
+        msg: >-
+          Пользователь '{{ item.item.login }}' не существует
+          на сервере {{ inventory_hostname }}.
+          Сброс пароля невозможен.
+      loop: "{{ user_check.results }}"
+      when: item.rc != 0
+
+
+    # ── 4. Генерируем новые пароли ──────────────────────────────────────
+    #
+    # Словарь:
+    # {
+    #   "ivanov": "НовыйПароль...",
+    #   "petrov": "НовыйПароль..."
+    # }
+    #
+    - name: "Генерация новых паролей"
+      ansible.builtin.set_fact:
+        user_passwords: >-
+          {{
+            user_passwords | default({}) |
+            combine({
+              item.login:
+              lookup(
+                'password',
+                '/dev/null',
+                length=16,
+                chars='ascii_letters,digits,punctuation'
+              )
+            })
+          }}
+      loop: "{{ users }}"
+      no_log: true
+
+
+    # ── 5. Устанавливаем новый пароль ──────────────────────────────────
+    - name: "Смена пароля пользователя"
+      ansible.builtin.user:
+        name: "{{ item.login }}"
+        password: "{{ user_passwords[item.login] | password_hash('sha512') }}"
+      loop: "{{ users }}"
+      no_log: true
+
+
+    # ── 6. Принудительная смена пароля при следующем входе ─────────────
+    - name: "Принудительная смена пароля при следующем входе"
+      ansible.builtin.command:
+        cmd: "chage -d 0 {{ item.login }}"
+      loop: "{{ users }}"
+
+
+    # ── 7. Отправляем пользователю новый пароль ─────────────────────────
+    - name: "Отправка нового пароля на почту"
+      ansible.builtin.shell:
+        cmd: "printf '%s\\n' '{{ mail_body }}' | mail -s '{{ mail_subject }}' '{{ item.email }}'"
+      loop: "{{ users }}"
+      no_log: true
+
+      vars:
+        mail_subject: "Сброс пароля - {{ inventory_hostname }}"
+
+        mail_body: |
+          Здравствуйте, {{ item.firstname }} {{ item.lastname }}.
+
+          Пароль вашей учётной записи на сервере был сброшен.
+
+          Сервер:  {{ inventory_hostname }}
+          Логин:   {{ item.login }}
+          Пароль:  {{ user_passwords[item.login] }}
+
+          Подключение:
+          ssh -p 222 {{ item.login }}@{{ ansible_host | default(inventory_hostname) }}
+
+          При первом входе система потребует сменить пароль.
+
+          Ответьте yes на уведомление о новом хосте SSH.
+          При вводе пароля символы не отображаются.
+          По окончании ввода нажмите Enter.
+
+          ---
+          Это письмо сгенерировано автоматически.
+          По вопросам обращайтесь к системному администратору.
+
+
+    # ── 8. Итоговый отчёт ───────────────────────────────────────────────
+    - name: "Итоговый отчёт"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.login }} —
+          пароль сброшен,
+          письмо отправлено на {{ item.email }}
+      loop: "{{ users }}"
